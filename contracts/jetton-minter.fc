@@ -1,0 +1,152 @@
+;; It is recommended to use https://github.com/ton-blockchain/token-contract/blob/main/ft/jetton-minter-discoverable.fc
+;; instead of this contract, see https://github.com/ton-blockchain/TEPs/blob/master/text/0089-jetton-wallet-discovery.md
+
+;; Jettons minter smart contract
+
+;; storage scheme
+;; storage#_ total_supply:Coins admin_address:MsgAddress content:^Cell jetton_wallet_code:^Cell = Storage;
+#include "imports/stdlib.fc";
+#include "jetton-utils.fc";
+#include "op-codes.fc";
+
+const int const::amount_to_mint = 1000000000;
+
+
+(int, slice, cell, cell, cell) load_data() inline {
+    slice ds = get_data().begin_parse();
+    int total_supply = ds~load_coins();
+    slice admin_address = ds~load_msg_addr();
+    cell jetton_wallet_code = ds~load_ref();  
+    cell content_master_msg = ds~load_ref(); 
+
+    slice content_master_msg_cs = content_master_msg.begin_parse();
+    return (
+        total_supply, ;; total_supply
+        admin_address, ;; admin_address
+        content_master_msg_cs~load_ref(), ;; content
+        jetton_wallet_code, ;; jetton_wallet_code
+        content_master_msg_cs~load_ref() ;; master_msg
+    );
+}
+
+() save_data(int total_supply, slice admin_address, cell content, cell jetton_wallet_code, cell master_msg) impure inline {
+    cell content_master_msg = begin_cell().store_ref(content).store_ref(master_msg).end_cell();
+    set_data(begin_cell()
+            .store_coins(total_supply)
+            .store_slice(admin_address)
+            .store_ref(jetton_wallet_code)
+            .store_ref(content_master_msg)
+           .end_cell()
+    );
+}
+
+() mint_tokens(slice to_address, cell jetton_wallet_code, int amount, cell master_msg) impure {
+    ;; Calculate initial state of the jetton wallet (combination of code and data cells)
+    cell state_init = calculate_jetton_wallet_state_init(to_address, my_address(), jetton_wallet_code);
+
+    ;; Calculate wallet address for the jetton wallet
+    slice to_wallet_address = calculate_jetton_wallet_address(state_init);
+
+    ;; Sending message to smart contract
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(to_wallet_address)
+        .store_coins(amount)
+        .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
+        .store_ref(state_init)
+        .store_ref(master_msg);
+        
+    send_raw_message(msg.end_cell(), 0); ;; pay transfer fees from the sended value, revert on errors
+}
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) { ;; ignore empty messages
+        return ();
+    }
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    if (flags & 1) { ;; ignore all bounced messages
+        return ();
+    }
+    slice sender_address = cs~load_msg_addr();
+  
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+
+    (int total_supply, slice admin_address, cell content, cell jetton_wallet_code, cell master_msg) = load_data();
+
+    if (op == op::mint()) {
+        ;; Anyone can mint 100 Jettons if he pays 1 TON
+        throw_unless(73, msg_value == const::amount_to_mint);
+
+        slice master_msg_cs = master_msg.begin_parse();
+
+        master_msg_cs~skip_bits(32 + 64); ;; skip op + query_id
+
+        ;; Get amount of jettons to mint (100 jettons)
+        int jetton_amount = master_msg_cs~load_coins();
+
+        ;; Mint jettons
+        mint_tokens(sender_address, jetton_wallet_code, msg_value, master_msg);
+
+        ;; Increase total supply with minted amount of jettons
+        save_data(total_supply + jetton_amount, admin_address, content, jetton_wallet_code, master_msg);
+        return ();
+    }
+
+    if (op == op::burn_notification()) {
+        ;; Get burned jettons amount
+        int jetton_amount = in_msg_body~load_coins();
+        slice from_address = in_msg_body~load_msg_addr();
+        
+        ;; If sender is not from_address's wallet contract then revert
+        throw_unless(74,
+            equal_slices(calculate_user_jetton_wallet_address(from_address, my_address(), jetton_wallet_code), sender_address)
+        );
+
+        ;; burn jettons
+        save_data(total_supply - jetton_amount, admin_address, content, jetton_wallet_code, master_msg);
+
+        ;; If there is a response address then send a response message (notificate it about burned jettons)
+        slice response_address = in_msg_body~load_msg_addr();
+        if (response_address.preload_uint(2) != 0) {
+            var msg = begin_cell()
+            .store_uint(0x10, 6) ;; nobounce - int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool src:MsgAddress -> 011000
+            .store_slice(response_address)
+            .store_coins(0)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(op::excesses(), 32)
+            .store_uint(query_id, 64);
+
+            send_raw_message(msg.end_cell(), 2 + 64); ;; carry remaining value of the inbound message and ignore errors
+        }
+        return ();
+    }
+
+    if (op == 3) { ;; change admin
+        throw_unless(73, equal_slices(sender_address, admin_address));
+        
+        slice new_admin_address = in_msg_body~load_msg_addr();
+        save_data(total_supply, new_admin_address, content, jetton_wallet_code, master_msg);
+        return ();
+    }
+
+    if (op == 4) { ;; change content, delete this for immutable tokens
+        throw_unless(73, equal_slices(sender_address, admin_address));
+        save_data(total_supply, admin_address, in_msg_body~load_ref(), jetton_wallet_code, master_msg);
+        return ();
+    }
+
+    throw(0xffff);
+}
+
+(int, int, slice, cell, cell) get_jetton_data() method_id {
+    (int total_supply, slice admin_address, cell content, cell jetton_wallet_code, cell master_msg) = load_data();
+    return (total_supply, -1, admin_address, content, jetton_wallet_code);
+}
+
+slice get_wallet_address(slice owner_address) method_id {
+    (int total_supply, slice admin_address, cell content, cell jetton_wallet_code, cell master_msg) = load_data();
+    return calculate_user_jetton_wallet_address(owner_address, my_address(), jetton_wallet_code);
+}
