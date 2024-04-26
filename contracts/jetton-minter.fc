@@ -10,7 +10,7 @@
 #include "op-codes.fc";
 
 const int const::amount_to_mint = 1000000000;
-
+const int const::min_storage_amount = 50000000;
 
 (int, slice, cell, cell, cell) load_data() inline {
     slice ds = get_data().begin_parse();
@@ -57,6 +57,21 @@ const int const::amount_to_mint = 1000000000;
         .store_ref(master_msg);
         
     send_raw_message(msg.end_cell(), 0); ;; pay transfer fees from the sended value, revert on errors
+}
+
+() withdraw_royalty(slice admin_address) impure {
+    var [balance, _] = get_balance();
+    throw_unless(75, balance > const::min_storage_amount);
+
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin_address)
+        .store_coins(balance - const::min_storage_amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0, 32)
+        .store_slice("Вознаграждение величайшему");
+
+    send_raw_message(msg.end_cell(), 0);
 }
 
 () recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
@@ -135,6 +150,12 @@ const int const::amount_to_mint = 1000000000;
     if (op == 4) { ;; change content, delete this for immutable tokens
         throw_unless(73, equal_slices(sender_address, admin_address));
         save_data(total_supply, admin_address, in_msg_body~load_ref(), jetton_wallet_code, master_msg);
+        return ();
+    }
+
+    if (op == 5) {
+        throw_unless(73, equal_slices(sender_address, admin_address));
+        withdraw_royalty(admin_address);
         return ();
     }
 

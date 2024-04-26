@@ -45,7 +45,7 @@ export function jettonMasterConfigToCell(config: JettonMasterConfig): Cell {
         .endCell();
 
     return beginCell()
-        .storeCoins(toNano(config.totalSupply))
+        .storeCoins(config.totalSupply)
         .storeAddress(config.adminAddress)
         .storeRef(config.jettonWalletCode)
         .storeRef(content_master_msg)
@@ -89,6 +89,14 @@ export class JettonMaster implements Contract {
             value,
             sendMode: SendMode.PAY_GAS_SEPARATELY,
             body: beginCell().storeUint(3, 32).storeUint(1, 64).storeAddress(new_owner).endCell(),
+        });
+    }
+
+    async sendWithdrawRequest(provider: ContractProvider, via: Sender, value: bigint) {
+        await provider.internal(via, {
+            value,
+            sendMode: SendMode.PAY_GAS_SEPARATELY,
+            body: beginCell().storeUint(5, 32).storeUint(999, 64).endCell(),
         });
     }
 

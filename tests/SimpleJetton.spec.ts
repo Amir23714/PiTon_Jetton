@@ -233,6 +233,29 @@ describe('SimpleJetton', () => {
 
         expect(userOneJettonWalletData_after_burn.jetton_balance).toEqual(0);
         expect(masterContractData_after_burn.total_supply).toBe(0);
+
+        // Withdraw by admin
+        const ownerBalance_before_withdraw = await ownerWallet.getBalance();
+        const withdrawResult = await jettonMasterContract.sendWithdrawRequest(ownerWallet.getSender(), toNano('0.01'));
+
+        expect(withdrawResult.transactions).toHaveTransaction({
+            from: ownerWallet.address,
+            to: jettonMasterContract.address,
+            success: true,
+        });
+
+        expect(withdrawResult.transactions).toHaveTransaction({
+            from: jettonMasterContract.address,
+            to: ownerWallet.address,
+            success: true,
+        });
+
+        const ownerBalance_after_withdraw = await ownerWallet.getBalance();
+        console.log(
+            'Owner got ',
+            fromNano(ownerBalance_after_withdraw - ownerBalance_before_withdraw),
+            ' TONs as Royalty',
+        );
     });
 
     it('Can change admin of Jetton Master', async () => {
