@@ -7,6 +7,8 @@
 -   `tests` - tests for the contracts.
 -   `scripts` - scripts used by the project, mainly the deployment scripts.
 
+-   `piton_UML.pdf` - UML diagram of Jetton's working process.
+
 ## How to use
 
 ### Build
